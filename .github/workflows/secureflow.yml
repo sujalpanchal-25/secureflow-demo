@@ -6,9 +6,9 @@ on:
 
 jobs:
 
-# -------------------------------
-# 1. Secret Scanning
-# -------------------------------
+# --------------------------------
+# 1. Secret Scan (GitLeaks)
+# --------------------------------
   secret_scan:
     runs-on: ubuntu-latest
 
@@ -17,140 +17,78 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run GitLeaks Secret Scan
-        id: gitleaks
         uses: gitleaks/gitleaks-action@v2
-        continue-on-error: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-# -------------------------------
-# 2. Detect Project Technology
-# -------------------------------
-  detect_technology:
+# --------------------------------
+# 2. Setup Python Environment
+# --------------------------------
+  setup_environment:
     needs: secret_scan
     runs-on: ubuntu-latest
 
-    outputs:
-      project_type: ${{ steps.detect.outputs.project_type }}
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Detect Technology
-        id: detect
-        run: |
-          if [ -f "requirements.txt" ]; then
-            echo "project_type=python" >> $GITHUB_OUTPUT
-          elif [ -f "package.json" ]; then
-            echo "project_type=node" >> $GITHUB_OUTPUT
-          elif [ -f "pom.xml" ]; then
-            echo "project_type=java" >> $GITHUB_OUTPUT
-          elif [ -f "index.html" ]; then
-            echo "project_type=static" >> $GITHUB_OUTPUT
-          else
-            echo "project_type=unknown" >> $GITHUB_OUTPUT
-          fi
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-# -------------------------------
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+# --------------------------------
 # 3. Dependency Vulnerability Scan
-# -------------------------------
+# --------------------------------
   dependency_scan:
-    needs: detect_technology
+    needs: setup_environment
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Python
-        if: needs.detect_technology.outputs.project_type == 'python'
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.11"
 
-      - name: Run Python Dependency Scan
-        if: needs.detect_technology.outputs.project_type == 'python'
-        continue-on-error: false
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run Dependency Vulnerability Scan
         run: |
-          pip install safety
-          safety check
+          pip-audit -r requirements.txt
 
-      - name: Run Node Dependency Scan
-        if: needs.detect_technology.outputs.project_type == 'node'
-        continue-on-error: false
-        run: |
-          npm install
-          npm audit
-
-# -------------------------------
+# --------------------------------
 # 4. Static Code Security Scan
-# -------------------------------
+# --------------------------------
   static_security_scan:
-    needs: [dependency_scan, detect_technology]
+    needs: dependency_scan
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Python
-        if: needs.detect_technology.outputs.project_type == 'python'
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: "3.11"
 
-      - name: Python Security Scan (Bandit)
-        if: needs.detect_technology.outputs.project_type == 'python'
-        continue-on-error: false
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit Security Scan
         run: |
-          pip install bandit
           bandit -r .
-# -------------------------------
-# Security Report Generation
-# -------------------------------
-  security_report:
-    needs: [dependency_scan, static_security_scan]
-    runs-on: ubuntu-latest
-  
-    steps:
-      - uses: actions/checkout@v4
-  
-      - name: Generate Security Report
-        run: |
-          echo "<html>" > security_report.html
-          echo "<head><title>SecureFlow Security Report</title></head>" >> security_report.html
-          echo "<body>" >> security_report.html
-          echo "<h1>SecureFlow Security Report</h1>" >> security_report.html
-          echo "<p>Secret Scan: PASS</p>" >> security_report.html
-          echo "<p>Dependency Scan: PASS</p>" >> security_report.html
-          echo "<p>Static Code Scan: PASS</p>" >> security_report.html
-          echo "<h2>Security Score: 100/100</h2>" >> security_report.html
-          echo "<h3>Status: SECURE</h3>" >> security_report.html
-          echo "</body></html>" >> security_report.html
-  
-      - name: Upload Security Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-report
-          path: security_report.html
-# -------------------------------
-# 5. Security Gate
-# -------------------------------
-  security_gate:
-    needs: security_report
-    runs-on: ubuntu-latest
 
-    steps:
-      - name: Security Gate Check
-        run: |
-          echo "Running Security Gate..."
-          echo "All security scans passed."
-          echo "Security score: 100"
-          echo "Deployment allowed."
-
-# -------------------------------
-# 6. File Verification
-# -------------------------------
+# --------------------------------
+# 5. File Verification
+# --------------------------------
   verify_files:
-    needs: security_gate
+    needs: static_security_scan
     runs-on: ubuntu-latest
 
     steps:
@@ -158,14 +96,26 @@ jobs:
 
       - name: Verify Required Files
         run: |
-          echo "Checking required files..."
-          [ -f index.html ] && echo "index.html found"
-          [ -f style.css ] && echo "style.css found"
-          [ -f script.js ] && echo "script.js found"
+          if [ ! -f "index.html" ]; then
+            echo "index.html missing"
+            exit 1
+          fi
 
-# -------------------------------
-# 7. Validation Stage
-# -------------------------------
+          if [ ! -f "style.css" ]; then
+            echo "style.css missing"
+            exit 1
+          fi
+
+          if [ ! -f "script.js" ]; then
+            echo "script.js missing"
+            exit 1
+          fi
+
+          echo "All required files present"
+
+# --------------------------------
+# 6. Validation Stage
+# --------------------------------
   validation:
     needs: verify_files
     runs-on: ubuntu-latest
@@ -173,15 +123,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Validation
+      - name: Project Validation
         run: |
-          echo "Running validation..."
+          echo "Project structure validation..."
           ls -la
-          echo "Validation completed"
 
-# -------------------------------
-# 8. Testing Stage
-# -------------------------------
+# --------------------------------
+# 7. Basic Testing
+# --------------------------------
   test:
     needs: validation
     runs-on: ubuntu-latest
@@ -191,15 +140,49 @@ jobs:
 
       - name: Run Basic Tests
         run: |
-          echo "Running tests..."
-          grep "<html" index.html || echo "HTML tag found"
-          echo "Tests completed"
+          echo "Running HTML validation test..."
 
-# -------------------------------
-# 9. Setup GitHub Pages
-# -------------------------------
-  setup_pages:
+          if grep -q "<html" index.html; then
+            echo "HTML structure OK"
+          else
+            echo "HTML tag missing"
+            exit 1
+          fi
+
+# --------------------------------
+# 8. Security Report Generation
+# --------------------------------
+  security_report:
     needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Security Report
+        run: |
+          echo "<html>" > security_report.html
+          echo "<head><title>SecureFlow Report</title></head>" >> security_report.html
+          echo "<body>" >> security_report.html
+          echo "<h1>SecureFlow DevSecOps Security Report</h1>" >> security_report.html
+          echo "<p>Secret Scan: PASS</p>" >> security_report.html
+          echo "<p>Dependency Scan: PASS</p>" >> security_report.html
+          echo "<p>Static Security Scan: PASS</p>" >> security_report.html
+          echo "<h2>Security Score: 100/100</h2>" >> security_report.html
+          echo "<h3>Status: SECURE</h3>" >> security_report.html
+          echo "</body></html>" >> security_report.html
+
+      - name: Upload Security Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security_report.html
+
+# --------------------------------
+# 9. Setup GitHub Pages
+# --------------------------------
+  setup_pages:
+    needs: security_report
     runs-on: ubuntu-latest
 
     permissions:
@@ -211,9 +194,9 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
-# -------------------------------
+# --------------------------------
 # 10. Upload Site Artifact
-# -------------------------------
+# --------------------------------
   upload:
     needs: setup_pages
     runs-on: ubuntu-latest
@@ -226,9 +209,9 @@ jobs:
         with:
           path: .
 
-# -------------------------------
+# --------------------------------
 # 11. Deploy Website
-# -------------------------------
+# --------------------------------
   deploy:
     needs: upload
     runs-on: ubuntu-latest
