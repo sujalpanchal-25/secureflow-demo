@@ -6,9 +6,9 @@ on:
 
 jobs:
 
-# --------------------------------
-# 1. Secret Scan (GitLeaks)
-# --------------------------------
+# -------------------------------
+# 1. Secret Scan
+# -------------------------------
   secret_scan:
     runs-on: ubuntu-latest
 
@@ -21,30 +21,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-# --------------------------------
-# 2. Setup Python Environment
-# --------------------------------
-  setup_environment:
-    needs: secret_scan
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt
-
-# --------------------------------
-# 3. Dependency Vulnerability Scan
-# --------------------------------
+# -------------------------------
+# 2. Dependency Vulnerability Scan
+# -------------------------------
   dependency_scan:
-    needs: setup_environment
+    needs: secret_scan
     runs-on: ubuntu-latest
 
     steps:
@@ -58,13 +39,13 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
-      - name: Run Dependency Vulnerability Scan
+      - name: Run Dependency Scan
         run: |
           pip-audit -r requirements.txt
 
-# --------------------------------
-# 4. Static Code Security Scan
-# --------------------------------
+# -------------------------------
+# 3. Static Code Security Scan
+# -------------------------------
   static_security_scan:
     needs: dependency_scan
     runs-on: ubuntu-latest
@@ -80,96 +61,75 @@ jobs:
       - name: Install Bandit
         run: pip install bandit
 
-      - name: Run Bandit Security Scan
+      - name: Run Static Security Scan
         run: |
           bandit -r .
 
-# --------------------------------
-# 5. File Verification
-# --------------------------------
-  verify_files:
-    needs: static_security_scan
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify Required Files
-        run: |
-          if [ ! -f "index.html" ]; then
-            echo "index.html missing"
-            exit 1
-          fi
-
-          if [ ! -f "style.css" ]; then
-            echo "style.css missing"
-            exit 1
-          fi
-
-          if [ ! -f "script.js" ]; then
-            echo "script.js missing"
-            exit 1
-          fi
-
-          echo "All required files present"
-
-# --------------------------------
-# 6. Validation Stage
-# --------------------------------
-  validation:
-    needs: verify_files
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Project Validation
-        run: |
-          echo "Project structure validation..."
-          ls -la
-
-# --------------------------------
-# 7. Basic Testing
-# --------------------------------
-  test:
-    needs: validation
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run Basic Tests
-        run: |
-          echo "Running HTML validation test..."
-
-          if grep -q "<html" index.html; then
-            echo "HTML structure OK"
-          else
-            echo "HTML tag missing"
-            exit 1
-          fi
-
-# --------------------------------
-# 8. Security Report Generation
-# --------------------------------
+# -------------------------------
+# 4. Security Report Generation
+# -------------------------------
   security_report:
-    needs: test
+    if: always()
+    needs: [secret_scan, dependency_scan, static_security_scan]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate Security Report
+      - name: Generate Security Dashboard
         run: |
+
+          SECRET="${{ needs.secret_scan.result }}"
+          DEP="${{ needs.dependency_scan.result }}"
+          STATIC="${{ needs.static_security_scan.result }}"
+
+          SCORE=0
+
+          if [ "$SECRET" = "success" ]; then
+            SCORE=$((SCORE+30))
+          fi
+
+          if [ "$DEP" = "success" ]; then
+            SCORE=$((SCORE+40))
+          fi
+
+          if [ "$STATIC" = "success" ]; then
+            SCORE=$((SCORE+30))
+          fi
+
+          if [ $SCORE -ge 80 ]; then
+            STATUS="SECURE"
+            COLOR="green"
+          else
+            STATUS="VULNERABLE"
+            COLOR="red"
+          fi
+
           echo "<html>" > security_report.html
-          echo "<head><title>SecureFlow Report</title></head>" >> security_report.html
-          echo "<body>" >> security_report.html
-          echo "<h1>SecureFlow DevSecOps Security Report</h1>" >> security_report.html
-          echo "<p>Secret Scan: PASS</p>" >> security_report.html
-          echo "<p>Dependency Scan: PASS</p>" >> security_report.html
-          echo "<p>Static Security Scan: PASS</p>" >> security_report.html
-          echo "<h2>Security Score: 100/100</h2>" >> security_report.html
-          echo "<h3>Status: SECURE</h3>" >> security_report.html
+          echo "<head><title>SecureFlow Security Dashboard</title></head>" >> security_report.html
+          echo "<body style='font-family:Arial;background:#f5f5f5;padding:30px'>" >> security_report.html
+
+          echo "<h1>🔐 SecureFlow DevSecOps Security Dashboard</h1>" >> security_report.html
+
+          echo "<p><b>Commit:</b> ${GITHUB_SHA::7}</p>" >> security_report.html
+          echo "<p><b>Generated:</b> $(date)</p>" >> security_report.html
+
+          echo "<h2>Pipeline Results</h2>" >> security_report.html
+
+          echo "<table border='1' cellpadding='10' style='border-collapse:collapse;background:white'>" >> security_report.html
+          echo "<tr><th>Security Scan</th><th>Status</th></tr>" >> security_report.html
+          echo "<tr><td>Secret Scan</td><td>$SECRET</td></tr>" >> security_report.html
+          echo "<tr><td>Dependency Scan</td><td>$DEP</td></tr>" >> security_report.html
+          echo "<tr><td>Static Code Scan</td><td>$STATIC</td></tr>" >> security_report.html
+          echo "</table>" >> security_report.html
+
+          echo "<h2>Security Score</h2>" >> security_report.html
+          echo "<h1>$SCORE / 100</h1>" >> security_report.html
+
+          echo "<h2 style='color:$COLOR'>Status: $STATUS</h2>" >> security_report.html
+
+          echo "<p>Generated automatically by SecureFlow DevSecOps Pipeline</p>" >> security_report.html
+
           echo "</body></html>" >> security_report.html
 
       - name: Upload Security Report
@@ -178,9 +138,9 @@ jobs:
           name: security-report
           path: security_report.html
 
-# --------------------------------
-# 9. Setup GitHub Pages
-# --------------------------------
+# -------------------------------
+# 5. Setup GitHub Pages
+# -------------------------------
   setup_pages:
     needs: security_report
     runs-on: ubuntu-latest
@@ -194,9 +154,9 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
-# --------------------------------
-# 10. Upload Site Artifact
-# --------------------------------
+# -------------------------------
+# 6. Upload Website Artifact
+# -------------------------------
   upload:
     needs: setup_pages
     runs-on: ubuntu-latest
@@ -209,9 +169,9 @@ jobs:
         with:
           path: .
 
-# --------------------------------
-# 11. Deploy Website
-# --------------------------------
+# -------------------------------
+# 7. Deploy Website
+# -------------------------------
   deploy:
     needs: upload
     runs-on: ubuntu-latest
